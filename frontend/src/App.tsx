@@ -31,6 +31,7 @@ const ClustersPage = lazy(() => import(/* webpackChunkName: "page-ClustersPage" 
 const ClusterDetailPage = lazy(() => import(/* webpackChunkName: "page-ClusterDetailPage" */ './pages/ClusterDetailPage'))
 const BackupPage = lazy(() => import(/* webpackChunkName: "page-BackupPage" */ './pages/BackupPage'))
 const DatabaseManagerPage = lazy(() => import(/* webpackChunkName: "page-DatabaseManagerPage" */ './pages/DatabaseManagerPage'))
+const QueryRulesPage = lazy(() => import(/* webpackChunkName: "page-QueryRulesPage" */ './pages/QueryRulesPage'))
 // MainLayout is eager-loaded because it's needed immediately after login
 import MainLayout from './components/layout/MainLayout'
 
@@ -95,6 +96,11 @@ export default function App() {
         <Route path="tables/:tableName" element={
           <Suspense fallback={<PageSkeleton type="table" />}>
             <TableBrowserPage />
+          </Suspense>
+        } />
+        <Route path="rules" element={
+          <Suspense fallback={<PageSkeleton />}>
+            <QueryRulesPage />
           </Suspense>
         } />
         <Route path="query" element={

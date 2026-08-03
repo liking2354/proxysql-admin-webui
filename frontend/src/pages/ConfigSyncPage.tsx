@@ -160,7 +160,14 @@ export default function ConfigSyncPage() {
                     <td className="py-2 px-3 text-right">{table.memory_rows}</td>
                     <td className="py-2 px-3 text-right">{table.runtime_rows}</td>
                     <td className="py-2 px-3 text-center">
-                      {table.has_unapplied ? (
+                      {table.applicable === false ? (
+                        <span
+                          title={t('sync.notApplicableHint')}
+                          className="text-gray-400 dark:text-slate-500 text-xs"
+                        >
+                          {t('sync.notApplicable')}
+                        </span>
+                      ) : table.has_unapplied ? (
                         <span className="inline-flex items-center gap-1 text-orange-600 dark:text-orange-400 text-xs font-medium">
                           <RotateCcw size={12} />
                           {t('sync.unappliedShort')}

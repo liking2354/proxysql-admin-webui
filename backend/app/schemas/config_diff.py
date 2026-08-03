@@ -8,6 +8,13 @@ class TableDiff(BaseModel):
     """Diff result for a single config table."""
     table: str = Field(description="Config table name.")
     in_sync: bool = Field(description="True if Memory and Runtime layers match.")
+    applicable: bool = Field(
+        default=True,
+        description=(
+            "False for static tables that have no runtime counterpart "
+            "(e.g. mysql_collations) and therefore can never be applied."
+        ),
+    )
     memory_rows: int = Field(description="Number of rows in Memory layer.")
     runtime_rows: int = Field(description="Number of rows in Runtime layer.")
     only_in_memory: int = Field(

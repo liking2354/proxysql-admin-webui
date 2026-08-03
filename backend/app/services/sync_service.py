@@ -8,6 +8,7 @@ from enum import Enum
 from typing import Optional
 
 from app.services.proxysql import proxysql_service
+from app.services.layer_compare import compare_layers, normalize_rows
 from app.utils.helpers import row_hash
 
 logger = logging.getLogger(__name__)
@@ -109,23 +110,28 @@ class SyncService:
                 # disk table might not exist or be accessible
                 disk_rows = []
 
-            # Compute hashes for comparison
-            mem_hashes = {row_hash(r) for r in memory_rows}
-            run_hashes = {row_hash(r) for r in runtime_rows}
-            disk_hashes = {row_hash(r) for r in disk_rows}
+            # Compute hashes for comparison.
+            # Comparison is delegated to layer_compare so that both this service
+            # and the config_diff endpoint apply the same normalisation rules
+            # (see layer_compare for why naive row-set diffing over-reports).
+            cmp = compare_layers(table, memory_rows, runtime_rows)
+            has_unapplied = not cmp["in_sync"]
+            only_memory = cmp["only_memory"]
+            only_runtime = cmp["only_runtime"]
 
-            # has_unapplied: MEMORY != RUNTIME
-            has_unapplied = mem_hashes != run_hashes
             # has_unsaved: MEMORY != DISK
-            has_unsaved = mem_hashes != disk_hashes if disk_rows else False
-
-            only_memory = len(mem_hashes - run_hashes)
-            only_runtime = len(run_hashes - mem_hashes)
+            if not cmp["applicable"] or not disk_rows:
+                has_unsaved = False
+            else:
+                mem_hashes = {row_hash(r) for r in normalize_rows(table, memory_rows)}
+                disk_hashes = {row_hash(r) for r in normalize_rows(table, disk_rows)}
+                has_unsaved = mem_hashes != disk_hashes
 
             results.append({
                 "table": table,
                 "has_unapplied": has_unapplied,
                 "has_unsaved": has_unsaved,
+                "applicable": cmp["applicable"],
                 "memory_rows": len(memory_rows),
                 "runtime_rows": len(runtime_rows),
                 "disk_rows": len(disk_rows),
@@ -240,8 +246,8 @@ class SyncService:
                             host, port, user, password,
                             f"SELECT * FROM main.runtime_{table}"
                         )
-                        mem_hashes = {row_hash(r) for r in memory_rows}
-                        run_hashes = {row_hash(r) for r in runtime_rows}
+                        mem_hashes = {row_hash(r) for r in normalize_rows(table, memory_rows)}
+                        run_hashes = {row_hash(r) for r in normalize_rows(table, runtime_rows)}
                         if mem_hashes != run_hashes:
                             only_mem = len(mem_hashes - run_hashes)
                             only_run = len(run_hashes - mem_hashes)

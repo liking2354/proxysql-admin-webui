@@ -14,6 +14,7 @@ from app.middleware import get_current_user
 from app.schemas.config_diff import ConfigDiffResponse
 from app.schemas.response import RESPONSE_AUTH, RESPONSE_500, HTTPError
 from app.services.cache_service import cache_service
+from app.services.layer_compare import normalize_rows, runtime_table_missing
 from app.services.proxysql import proxysql_service
 from app.utils.db_helpers import get_proxysql_credentials
 from app.utils.helpers import row_hash
@@ -98,22 +99,26 @@ async def get_config_diff(
         except Exception:
             runtime_rows = []
 
-        mem_hashes = {row_hash(r): r for r in memory_rows}
-        run_hashes = {row_hash(r): r for r in runtime_rows}
+        mem_hashes = {row_hash(r): r for r in normalize_rows(tbl, memory_rows)}
+        run_hashes = {row_hash(r): r for r in normalize_rows(tbl, runtime_rows)}
 
         only_memory_keys = set(mem_hashes.keys()) - set(run_hashes.keys())
         only_runtime_keys = set(run_hashes.keys()) - set(mem_hashes.keys())
         common_keys = set(mem_hashes.keys()) & set(run_hashes.keys())
 
-        has_diff = bool(only_memory_keys or only_runtime_keys)
+        # Static tables (no runtime counterpart) are always considered in sync;
+        # see app.services.layer_compare for the rationale.
+        applicable = not runtime_table_missing(tbl)
+        has_diff = applicable and bool(only_memory_keys or only_runtime_keys)
 
         results.append({
             "table": tbl,
             "in_sync": not has_diff,
+            "applicable": applicable,
             "memory_rows": len(memory_rows),
             "runtime_rows": len(runtime_rows),
-            "only_in_memory": len(only_memory_keys),
-            "only_in_runtime": len(only_runtime_keys),
+            "only_in_memory": len(only_memory_keys) if has_diff else 0,
+            "only_in_runtime": len(only_runtime_keys) if has_diff else 0,
             "diff": {
                 "added": [mem_hashes[k] for k in only_memory_keys] if has_diff else [],
                 "removed": [run_hashes[k] for k in only_runtime_keys] if has_diff else [],

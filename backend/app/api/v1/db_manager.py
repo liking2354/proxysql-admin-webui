@@ -11,6 +11,11 @@ user credentials that ProxySQL uses to connect to backend MySQL instances
 for query routing. The monitor user (mysql-monitor_*) only has minimal
 permissions for health checks and is insufficient for database management.
 
+Note on credentials scope: ProxySQL has no per-server credential columns in
+mysql_servers. Every backend=1 user in mysql_users is used to connect to all
+hostgroups, so any business user can access any backend. The default_hostgroup
+column only controls routing of unmatched queries.
+
 This module provides:
 - List backend MySQL servers from ProxySQL config
 - List available backend user credentials (from mysql_users)
@@ -189,11 +194,15 @@ async def list_backends(
     except Exception:
         business_users = []
 
-    # Build hostgroup → users mapping
-    hg_users: dict[int, list[BackendUser]] = {}
-    for u in business_users:
-        hg_users.setdefault(u.default_hostgroup, []).append(u)
-
+    # In ProxySQL, backend credentials are GLOBAL: every user in mysql_users
+    # with backend=1 is used to connect to *all* hostgroups. The
+    # default_hostgroup column only decides where unmatched queries are routed;
+    # it does not restrict which backends the account may connect to (there is
+    # no per-server credential column in mysql_servers).
+    #
+    # Therefore every backend server can be accessed with any backend user.
+    # Users whose default_hostgroup matches the server's hostgroup are listed
+    # first so the UI preselects the most natural choice.
     results = []
     seen = set()
     for b in backends:
@@ -204,6 +213,10 @@ async def list_backends(
             continue
         seen.add(sid)
         hg = int(b["hostgroup_id"])
+        ordered_users = sorted(
+            business_users,
+            key=lambda u: (u.default_hostgroup != hg, u.username),
+        )
         results.append(BackendServerSummary(
             id=sid,
             hostgroup_id=hg,
@@ -211,7 +224,7 @@ async def list_backends(
             port=int(b["port"]),
             status=str(b.get("status", "ONLINE")),
             comment=str(b.get("comment", "")),
-            available_users=hg_users.get(hg, []),
+            available_users=ordered_users,
         ))
 
     return results

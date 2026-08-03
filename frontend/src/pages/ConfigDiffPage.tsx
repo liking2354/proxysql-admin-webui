@@ -91,7 +91,14 @@ export default function ConfigDiffPage() {
                         ) : '—'}
                       </td>
                       <td className="py-2 px-3 text-center">
-                        {table.in_sync ? (
+                        {table.applicable === false ? (
+                          <span
+                            title={t('configDiff.notApplicableHint')}
+                            className="text-gray-400 dark:text-slate-500 text-xs"
+                          >
+                            {t('configDiff.notApplicable')}
+                          </span>
+                        ) : table.in_sync ? (
                           <span className="inline-flex items-center gap-1 text-green-600 dark:text-green-400 text-xs font-medium">
                             <CheckCircle size={12} />
                             {t('configDiff.synced')}

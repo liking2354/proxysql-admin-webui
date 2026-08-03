@@ -109,6 +109,12 @@ export const tablesApi = {
     apiClient.get(`/api/v1/${serverId}/tables/${tableName}`, { params }),
   getSchema: (serverId: string, tableName: string, layer?: string) =>
     apiClient.get(`/api/v1/${serverId}/tables/${tableName}/schema`, { params: layer ? { layer } : {} }),
+  insertRow: (serverId: string, tableName: string, data: Record<string, unknown>) =>
+    apiClient.post(`/api/v1/${serverId}/tables/${tableName}/row`, data),
+  updateRow: (serverId: string, tableName: string, pkValues: Record<string, unknown>, data: Record<string, unknown>) =>
+    apiClient.put(`/api/v1/${serverId}/tables/${tableName}/row`, data, { params: { pk_values: pkValues } }),
+  deleteRow: (serverId: string, tableName: string, pkValues: Record<string, unknown>) =>
+    apiClient.delete(`/api/v1/${serverId}/tables/${tableName}/row`, { params: { pk_values: pkValues } }),
 }
 
 // Sync API

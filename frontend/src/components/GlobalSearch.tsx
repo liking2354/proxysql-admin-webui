@@ -20,6 +20,7 @@ function buildSearchIndex(t: (key: string) => string): SearchItem[] {
   return [
     // ── Pages ──
     { id: 'page-dashboard', label: t('nav.dashboard'), keywords: ['dashboard', '仪表盘', 'overview', '概览', 'status', '状态'], path: '/dashboard', category: 'search.page' },
+    { id: 'page-rules', label: t('nav.rules'), keywords: ['rule', '规则', 'route', '路由', 'query_rules', 'hostgroup', '主机组', 'simulate', '模拟', 'force_master', 'digest', 'pattern'], path: '/rules', category: 'search.page' },
     { id: 'page-wizards', label: t('nav.wizards'), keywords: ['wizard', '向导', 'configure', '配置'], path: '/wizards', category: 'search.page' },
     { id: 'page-template', label: t('nav.template'), keywords: ['template', '模板', 'quick', '快速', 'deploy', '部署'], path: '/template', category: 'search.page' },
     { id: 'page-tables', label: t('nav.tables'), keywords: ['table', '表', 'browser', '浏览器', 'data', '数据'], path: '/tables', category: 'search.page' },

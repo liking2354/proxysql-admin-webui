@@ -9,7 +9,7 @@ import GlobalSearch from '../GlobalSearch'
 import {
   LayoutDashboard, Wand2, Table, Terminal, RefreshCw,
   Users, Server, LogOut, Menu, X, GitCompare, Settings,
-  Network, Rocket, Archive, Search, Database,
+  Network, Rocket, Archive, Search, Database, Route,
 } from 'lucide-react'
 
 export default function MainLayout() {
@@ -19,23 +19,44 @@ export default function MainLayout() {
   const { t } = useI18n()
   const navigate = useNavigate()
 
-  // useMemo: navigation items list is stable and only depends on t (i18n).
-  // Without memoization, a new array would be created on every render,
-  // causing NavLink children to re-render unnecessarily.
-  const navItems = useMemo(() => [
-    { path: '/dashboard', label: t('nav.dashboard'), icon: LayoutDashboard },
-    { path: '/wizards', label: t('nav.wizards'), icon: Wand2, tourId: 'nav-wizards' },
-    { path: '/template', label: t('nav.template'), icon: Rocket },
-    { path: '/tables', label: t('nav.tables'), icon: Table },
-    { path: '/query', label: t('nav.query'), icon: Terminal },
-    { path: '/sync', label: t('nav.sync'), icon: RefreshCw },
-    { path: '/config-diff', label: t('nav.configDiff'), icon: GitCompare },
-    { path: '/servers', label: t('nav.servers'), icon: Server },
-    { path: '/clusters', label: t('nav.clusters'), icon: Network },
-    { path: '/backup', label: t('nav.backup'), icon: Archive },
-    { path: '/database', label: t('nav.database'), icon: Database },
-    { path: '/users', label: t('nav.users'), icon: Users },
-    { path: '/settings', label: t('nav.settings'), icon: Settings },
+  // Navigation grouped by ProxySQL operational workflow rather than a flat list.
+  // Order reflects the day-to-day path: observe -> configure -> operate -> manage.
+  // useMemo keeps the structure stable so NavLink children don't re-render.
+  const navGroups = useMemo(() => [
+    {
+      label: t('nav.groupMonitor'),
+      items: [
+        { path: '/dashboard', label: t('nav.dashboard'), icon: LayoutDashboard },
+        { path: '/rules', label: t('nav.rules'), icon: Route },
+      ],
+    },
+    {
+      label: t('nav.groupConfig'),
+      items: [
+        { path: '/tables', label: t('nav.tables'), icon: Table },
+        { path: '/sync', label: t('nav.sync'), icon: RefreshCw },
+        { path: '/config-diff', label: t('nav.configDiff'), icon: GitCompare },
+        { path: '/wizards', label: t('nav.wizards'), icon: Wand2, tourId: 'nav-wizards' },
+        { path: '/template', label: t('nav.template'), icon: Rocket },
+      ],
+    },
+    {
+      label: t('nav.groupOps'),
+      items: [
+        { path: '/query', label: t('nav.query'), icon: Terminal },
+        { path: '/database', label: t('nav.database'), icon: Database },
+        { path: '/backup', label: t('nav.backup'), icon: Archive },
+      ],
+    },
+    {
+      label: t('nav.groupSystem'),
+      items: [
+        { path: '/servers', label: t('nav.servers'), icon: Server },
+        { path: '/clusters', label: t('nav.clusters'), icon: Network },
+        { path: '/users', label: t('nav.users'), icon: Users },
+        { path: '/settings', label: t('nav.settings'), icon: Settings },
+      ],
+    },
   ], [t])
 
   // useCallback: stable handler across renders
@@ -68,23 +89,35 @@ export default function MainLayout() {
           </button>
         </div>
 
-        <nav className="flex-1 py-4">
-          {navItems.map((item) => (
-            <NavLink
-              key={item.path}
-              to={item.path}
-              data-tour={(item as { tourId?: string }).tourId}
-              className={({ isActive }) =>
-                `flex items-center px-4 py-2.5 mx-2 rounded-lg mb-0.5 transition-colors ${
-                  isActive
-                    ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300'
-                    : 'text-gray-600 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-700'
-                }`
-              }
-            >
-              <item.icon size={20} />
-              {sidebarOpen && <span className="ml-3 text-sm font-medium">{item.label}</span>}
-            </NavLink>
+        <nav className="flex-1 py-3 overflow-y-auto">
+          {navGroups.map((group, gi) => (
+            <div key={group.label} className={gi > 0 ? 'mt-3' : ''}>
+              {sidebarOpen ? (
+                <p className="px-4 mb-1 text-[11px] font-semibold uppercase tracking-wider text-gray-400 dark:text-slate-500">
+                  {group.label}
+                </p>
+              ) : (
+                gi > 0 && <div className="mx-3 mb-2 border-t border-gray-200 dark:border-slate-700" />
+              )}
+              {group.items.map((item) => (
+                <NavLink
+                  key={item.path}
+                  to={item.path}
+                  title={sidebarOpen ? undefined : item.label}
+                  data-tour={(item as { tourId?: string }).tourId}
+                  className={({ isActive }) =>
+                    `flex items-center px-4 py-2 mx-2 rounded-lg mb-0.5 transition-colors ${
+                      isActive
+                        ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 font-medium'
+                        : 'text-gray-600 dark:text-slate-400 hover:bg-gray-100 dark:hover:bg-slate-700'
+                    }`
+                  }
+                >
+                  <item.icon size={18} className="shrink-0" />
+                  {sidebarOpen && <span className="ml-3 text-sm">{item.label}</span>}
+                </NavLink>
+              ))}
+            </div>
           ))}
         </nav>
 
