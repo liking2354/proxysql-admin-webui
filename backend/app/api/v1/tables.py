@@ -1,5 +1,8 @@
 """Table management API endpoints."""
+from typing import Any
+
 from fastapi import APIRouter, HTTPException, Depends, Query
+from pydantic import BaseModel, Field
 
 from app.middleware import get_current_user
 from app.services.proxysql import proxysql_service
@@ -8,6 +11,36 @@ from app.utils.db_helpers import get_proxysql_credentials
 from app.utils.helpers import quote_ident
 
 router = APIRouter()
+
+
+# Row-level DML payloads.
+#
+# These are declared as explicit models rather than bare ``dict`` parameters:
+# FastAPI treats a lone ``dict`` body parameter as the entire body but embeds
+# each one under its own key as soon as a second body parameter appears. Relying
+# on that implicit switch made the update/delete contract ambiguous, so every
+# endpoint now takes one wrapper model with named fields.
+class RowInsertRequest(BaseModel):
+    """Body for inserting a config-table row."""
+
+    data: dict[str, Any] = Field(..., description="Column name -> value map.")
+
+
+class RowUpdateRequest(BaseModel):
+    """Body for updating a single config-table row."""
+
+    pk_values: dict[str, Any] = Field(
+        ..., description="Primary-key column -> value map identifying the row."
+    )
+    data: dict[str, Any] = Field(..., description="Columns to update.")
+
+
+class RowDeleteRequest(BaseModel):
+    """Body for deleting a single config-table row."""
+
+    pk_values: dict[str, Any] = Field(
+        ..., description="Primary-key column -> value map identifying the row."
+    )
 
 
 # 临时调试：捕获所有异常并返回详细信息
@@ -317,11 +350,15 @@ async def get_table_schema(
 async def insert_row(
     server_id: str,
     table_name: str,
-    data: dict,
+    payload: RowInsertRequest,
     user=Depends(get_current_user),
 ):
-    """Insert a row into a config table."""
+    """Insert a row into a config table (MEMORY layer)."""
     host, port, admin_user, password = await get_proxysql_credentials(server_id)
+
+    data = payload.data
+    if not data:
+        raise HTTPException(status_code=400, detail="data must not be empty")
 
     # Validate every column name against the identifier whitelist to prevent
     # SQL injection through user-supplied dict keys.
@@ -345,12 +382,22 @@ async def insert_row(
 async def update_row(
     server_id: str,
     table_name: str,
-    pk_values: dict,
-    data: dict,
+    payload: RowUpdateRequest,
     user=Depends(get_current_user),
 ):
-    """Update a row in a config table."""
+    """Update a single row in a config table (MEMORY layer)."""
     host, port, admin_user, password = await get_proxysql_credentials(server_id)
+
+    data = payload.data
+    pk_values = payload.pk_values
+    if not data:
+        raise HTTPException(status_code=400, detail="data must not be empty")
+    # An empty WHERE clause would rewrite every row in the table.
+    if not pk_values:
+        raise HTTPException(
+            status_code=400,
+            detail="pk_values must not be empty, otherwise every row would be updated",
+        )
 
     try:
         safe_table = quote_ident(table_name)
@@ -376,11 +423,19 @@ async def update_row(
 async def delete_row(
     server_id: str,
     table_name: str,
-    pk_values: dict,
+    payload: RowDeleteRequest,
     user=Depends(get_current_user),
 ):
-    """Delete a row from a config table."""
+    """Delete a single row from a config table (MEMORY layer)."""
     host, port, admin_user, password = await get_proxysql_credentials(server_id)
+
+    pk_values = payload.pk_values
+    # An empty WHERE clause would wipe the whole table.
+    if not pk_values:
+        raise HTTPException(
+            status_code=400,
+            detail="pk_values must not be empty, otherwise every row would be deleted",
+        )
 
     try:
         safe_table = quote_ident(table_name)

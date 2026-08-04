@@ -6,7 +6,7 @@ import { useI18n } from '../i18n'
 import {
   Route, Play, ChevronDown, ChevronRight, AlertTriangle, CheckCircle2,
   Copy, Check, Zap, ArrowDown, Server, Layers, RefreshCw, Save,
-  Eye, EyeOff, Search, X,
+  Eye, EyeOff, Search, X, Plus, Edit2, Trash2, Info,
 } from 'lucide-react'
 
 /** A row from mysql_query_rules. */
@@ -204,6 +204,58 @@ const PRESET_SQLS = [
   'SELECT VERSION()',
 ]
 
+/** Columns rendered as a multi-line textarea (regexes and free text). */
+const TEXTAREA_COLUMNS = new Set([
+  'match_digest', 'match_pattern', 'replace_pattern', 'comment',
+  'error_msg', 'OK_msg', 'attributes',
+])
+
+/** Columns that are boolean flags in ProxySQL (stored as 0/1). */
+const BOOLEAN_COLUMNS = new Set([
+  'active', 'apply', 'negate_match_pattern', 'cache_empty_result',
+  'sticky_conn', 'multiplex', 'log', 'reconnect',
+])
+
+/**
+ * Field layout for the rule editor, grouped by purpose rather than by the
+ * physical column order of mysql_query_rules. Columns absent from the running
+ * ProxySQL version are skipped, and any column not listed here is collected
+ * into a trailing "other" group so nothing is silently hidden.
+ */
+const FIELD_GROUPS: { key: string; columns: string[] }[] = [
+  { key: 'basic', columns: ['rule_id', 'active', 'comment'] },
+  {
+    key: 'match',
+    columns: [
+      'match_pattern', 'match_digest', 'negate_match_pattern', 're_modifiers',
+      'username', 'schemaname', 'client_addr', 'proxy_addr', 'proxy_port', 'digest',
+    ],
+  },
+  { key: 'action', columns: ['destination_hostgroup', 'apply', 'replace_pattern', 'mirror_hostgroup'] },
+  { key: 'reliability', columns: ['timeout', 'retries', 'delay', 'error_msg', 'OK_msg'] },
+  { key: 'cache', columns: ['cache_ttl', 'cache_empty_result', 'cache_timeout'] },
+]
+
+/** Per-column inline help, surfaced under the input. */
+const FIELD_HINTS: Record<string, string> = {
+  rule_id: 'rules.hint.ruleId',
+  active: 'rules.hint.active',
+  match_pattern: 'rules.hint.matchPattern',
+  match_digest: 'rules.hint.matchDigest',
+  negate_match_pattern: 'rules.hint.negate',
+  re_modifiers: 'rules.hint.reModifiers',
+  username: 'rules.hint.username',
+  schemaname: 'rules.hint.schemaname',
+  destination_hostgroup: 'rules.hint.destHg',
+  apply: 'rules.hint.apply',
+  replace_pattern: 'rules.hint.replacePattern',
+  mirror_hostgroup: 'rules.hint.mirrorHg',
+  timeout: 'rules.hint.timeout',
+  cache_ttl: 'rules.hint.cacheTtl',
+  comment: 'rules.hint.comment',
+}
+
+
 export default function QueryRulesPage() {
   const selectedId = useServerStore((s) => s.selectedId)
   const { t } = useI18n()
@@ -250,10 +302,53 @@ export default function QueryRulesPage() {
     mutationFn: () => syncApi.save(selectedId!, ['mysql_query_rules']),
   })
 
+  // ── Rule editing (writes to the MEMORY layer only) ──
+  // ProxySQL's row-level DML always targets main.mysql_query_rules, so editing
+  // is offered exclusively while the memory layer is selected. Changes then need
+  // an explicit "apply to runtime" to affect live traffic.
+  const [editingRule, setEditingRule] = useState<QueryRule | null>(null)
+  const [creatingRule, setCreatingRule] = useState(false)
+
+  const invalidateRules = () => {
+    queryClient.invalidateQueries({ queryKey: ['qr-rules'] })
+    queryClient.invalidateQueries({ queryKey: ['qr-hits'] })
+  }
+
+  const insertRuleMut = useMutation({
+    mutationFn: (data: Record<string, unknown>) =>
+      tablesApi.insertRow(selectedId!, 'mysql_query_rules', data),
+    onSuccess: () => {
+      invalidateRules()
+      setCreatingRule(false)
+    },
+  })
+  const updateRuleMut = useMutation({
+    mutationFn: (vars: { ruleId: number; data: Record<string, unknown> }) =>
+      tablesApi.updateRow(selectedId!, 'mysql_query_rules', { rule_id: vars.ruleId }, vars.data),
+    onSuccess: () => {
+      invalidateRules()
+      setEditingRule(null)
+    },
+  })
+  const deleteRuleMut = useMutation({
+    mutationFn: (ruleId: number) =>
+      tablesApi.deleteRow(selectedId!, 'mysql_query_rules', { rule_id: ruleId }),
+    onSuccess: invalidateRules,
+  })
+
+  const canEdit = layer === 'memory'
+  const mutationError = insertRuleMut.error || updateRuleMut.error || deleteRuleMut.error
+
   const rules: QueryRule[] = useMemo(() => {
     const raw = rulesRes?.data?.rows || []
     return [...raw].sort((a: QueryRule, b: QueryRule) => Number(a.rule_id) - Number(b.rule_id))
   }, [rulesRes])
+
+  /** Actual column list of mysql_query_rules on this ProxySQL version. */
+  const ruleColumns: string[] = useMemo(
+    () => rulesRes?.data?.column_names || [],
+    [rulesRes],
+  )
 
   const servers: ServerRow[] = serversRes?.data?.rows || []
   const users: MysqlUser[] = usersRes?.data?.rows || []
@@ -285,6 +380,44 @@ export default function QueryRulesPage() {
     () => (simSql.trim() ? simulate(simSql, rules, defaultHg) : null),
     [simSql, rules, defaultHg],
   )
+
+  /**
+   * Static health checks over the rule set.
+   *
+   * These catch silent routing failures — a corrupted regex keeps ProxySQL
+   * running happily while every statement falls through to the default
+   * hostgroup, which on a cross-cloud deployment means writes land on the wrong
+   * side. The doubled-backslash check exists because shell/SQL escaping
+   * accidents (`\\s` instead of `\s`) are the most common way a working rule
+   * silently stops matching: RE2 reads `\\s` as a literal backslash followed by
+   * "s" rather than as whitespace.
+   */
+  const healthIssues = useMemo(() => {
+    const issues: { ruleId: number; severity: 'error' | 'warn'; msgKey: string }[] = []
+    for (const r of rules) {
+      const rid = Number(r.rule_id)
+      const regex = (r.match_pattern || r.match_digest || '') as string
+      if (!regex) continue
+
+      // A literal double backslash before a character-class letter or
+      // metacharacter is virtually always an escaping accident rather than an
+      // intentional match on a backslash character.
+      if (/\\\\[sdwbSDWB.*+?()[\]{}|^$]/.test(regex)) {
+        issues.push({ ruleId: rid, severity: 'error', msgKey: 'rules.health.doubleBackslash' })
+      }
+      // Comments never survive digest normalisation, so such a rule is dead.
+      if (r.match_digest && /\/\*/.test(String(r.match_digest))) {
+        issues.push({ ruleId: rid, severity: 'error', msgKey: 'rules.health.commentInDigest' })
+      }
+      // An active rule that has never matched anything is worth a look.
+      if (Number(r.active) === 1 && hitsMap.get(rid) === 0) {
+        issues.push({ ruleId: rid, severity: 'warn', msgKey: 'rules.health.neverHit' })
+      }
+    }
+    return issues
+  }, [rules, hitsMap])
+
+  const criticalIssues = healthIssues.filter((i) => i.severity === 'error')
 
   const filteredRules = useMemo(() => {
     if (!regexFilter.trim()) return rules
@@ -350,6 +483,57 @@ export default function QueryRulesPage() {
           </button>
         </div>
       </div>
+
+      {/* ── Rule health self-check ── */}
+      {healthIssues.length > 0 && (
+        <div className={`rounded-lg border px-4 py-3 ${
+          criticalIssues.length > 0
+            ? 'bg-red-50 dark:bg-red-900/20 border-red-300 dark:border-red-700'
+            : 'bg-yellow-50 dark:bg-yellow-900/20 border-yellow-300 dark:border-yellow-700'
+        }`}>
+          <div className="flex items-start gap-2">
+            <AlertTriangle
+              size={18}
+              className={`shrink-0 mt-0.5 ${
+                criticalIssues.length > 0
+                  ? 'text-red-600 dark:text-red-400'
+                  : 'text-yellow-700 dark:text-yellow-400'
+              }`}
+            />
+            <div className="flex-1">
+              <p className={`font-medium text-sm ${
+                criticalIssues.length > 0
+                  ? 'text-red-800 dark:text-red-300'
+                  : 'text-yellow-800 dark:text-yellow-300'
+              }`}>
+                {criticalIssues.length > 0
+                  ? t('rules.health.criticalTitle').replace('{n}', String(criticalIssues.length))
+                  : t('rules.health.warnTitle').replace('{n}', String(healthIssues.length))}
+              </p>
+              <ul className="mt-1.5 space-y-1">
+                {healthIssues.map((issue, i) => (
+                  <li key={i} className="text-xs flex items-start gap-1.5">
+                    <span className={`font-mono font-bold shrink-0 ${
+                      issue.severity === 'error'
+                        ? 'text-red-700 dark:text-red-400'
+                        : 'text-yellow-800 dark:text-yellow-400'
+                    }`}>
+                      rule_id={issue.ruleId}
+                    </span>
+                    <span className={
+                      issue.severity === 'error'
+                        ? 'text-red-700 dark:text-red-400'
+                        : 'text-yellow-800 dark:text-yellow-300'
+                    }>
+                      {t(issue.msgKey)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Layer warning: memory != runtime means unapplied changes ── */}
       {layer === 'memory' && (
@@ -508,24 +692,57 @@ export default function QueryRulesPage() {
               ({filteredRules.length}{regexFilter ? ` / ${rules.length}` : ''})
             </span>
           </h3>
-          <div className="relative">
-            <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
-            <input
-              value={regexFilter}
-              onChange={(e) => setRegexFilter(e.target.value)}
-              placeholder={t('rules.filterPlaceholder')}
-              className="pl-8 pr-8 py-1.5 text-sm w-56 border border-gray-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-900 text-gray-800 dark:text-slate-200"
-            />
-            {regexFilter && (
+          <div className="flex items-center gap-2">
+            {canEdit ? (
               <button
-                onClick={() => setRegexFilter('')}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                onClick={() => setCreatingRule(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm text-white bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 rounded-lg transition-colors"
               >
-                <X size={14} />
+                <Plus size={14} />
+                {t('rules.newRule')}
+              </button>
+            ) : (
+              <button
+                onClick={() => setLayer('memory')}
+                title={t('rules.editOnMemoryHint')}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-600 dark:text-slate-300 border border-gray-300 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-700"
+              >
+                <Edit2 size={14} />
+                {t('rules.switchToEdit')}
               </button>
             )}
+            <div className="relative">
+              <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+              <input
+                value={regexFilter}
+                onChange={(e) => setRegexFilter(e.target.value)}
+                placeholder={t('rules.filterPlaceholder')}
+                className="pl-8 pr-8 py-1.5 text-sm w-56 border border-gray-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-900 text-gray-800 dark:text-slate-200"
+              />
+              {regexFilter && (
+                <button
+                  onClick={() => setRegexFilter('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                >
+                  <X size={14} />
+                </button>
+              )}
+            </div>
           </div>
         </div>
+
+        {mutationError != null && (
+          <div className="mx-5 mt-3 flex items-start gap-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-lg px-3 py-2 text-sm text-red-700 dark:text-red-400">
+            <AlertTriangle size={15} className="shrink-0 mt-0.5" />
+            <span className="font-mono text-xs break-all">
+              {String(
+                (mutationError as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
+                (mutationError as Error)?.message ||
+                mutationError,
+              )}
+            </span>
+          </div>
+        )}
 
         <div className="p-5">
           {isLoading ? (
@@ -659,6 +876,34 @@ export default function QueryRulesPage() {
                             className={`shrink-0 mt-1 text-gray-400 transition-transform ${isOpen ? 'rotate-180' : ''}`}
                           />
                         </div>
+
+                        {/* Row actions (memory layer only) */}
+                        {canEdit && (
+                          <div
+                            className="flex items-center justify-end gap-1 mt-2 pt-2 border-t border-gray-100 dark:border-slate-700"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <button
+                              onClick={() => setEditingRule(r)}
+                              className="inline-flex items-center gap-1 px-2 py-1 text-xs text-gray-600 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-700 rounded transition-colors"
+                            >
+                              <Edit2 size={12} />
+                              {t('common.edit')}
+                            </button>
+                            <button
+                              onClick={() => {
+                                if (confirm(t('rules.confirmDeleteRule').replace('{id}', String(rid)))) {
+                                  deleteRuleMut.mutate(rid)
+                                }
+                              }}
+                              disabled={deleteRuleMut.isPending}
+                              className="inline-flex items-center gap-1 px-2 py-1 text-xs text-gray-600 dark:text-slate-400 hover:text-red-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-slate-700 rounded transition-colors disabled:opacity-50"
+                            >
+                              <Trash2 size={12} />
+                              {t('common.delete')}
+                            </button>
+                          </div>
+                        )}
                       </div>
 
                       {/* Expanded detail */}
@@ -784,6 +1029,281 @@ export default function QueryRulesPage() {
           {hgMap.size === 0 && (
             <p className="text-sm text-gray-400 dark:text-slate-500">{t('rules.noServers')}</p>
           )}
+        </div>
+      </div>
+
+      {/* ── Rule editor ── */}
+      {(editingRule || creatingRule) && (
+        <RuleFormModal
+          columns={ruleColumns}
+          initial={editingRule || {}}
+          isEdit={!!editingRule}
+          existingIds={rules.map((r) => Number(r.rule_id))}
+          submitting={insertRuleMut.isPending || updateRuleMut.isPending}
+          onSubmit={(data) => {
+            if (editingRule) {
+              // rule_id is the primary key and is passed separately; never in the payload.
+              const { rule_id: _pk, ...rest } = data
+              updateRuleMut.mutate({ ruleId: Number(editingRule.rule_id), data: rest })
+            } else {
+              insertRuleMut.mutate(data)
+            }
+          }}
+          onClose={() => {
+            setEditingRule(null)
+            setCreatingRule(false)
+            insertRuleMut.reset()
+            updateRuleMut.reset()
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+/**
+ * Create/edit form for a single mysql_query_rules row.
+ *
+ * Fields are grouped by purpose (identity / matching / routing action /
+ * reliability / cache) instead of dumping the ~35 raw columns in physical
+ * order, and each group carries inline guidance so the form is usable without
+ * consulting the ProxySQL manual. Columns unknown to FIELD_GROUPS are still
+ * rendered in a trailing "advanced" section so nothing is hidden.
+ */
+function RuleFormModal({
+  columns,
+  initial,
+  isEdit,
+  existingIds,
+  submitting,
+  onSubmit,
+  onClose,
+}: {
+  columns: string[]
+  initial: Partial<QueryRule>
+  isEdit: boolean
+  existingIds: number[]
+  submitting: boolean
+  onSubmit: (data: Record<string, unknown>) => void
+  onClose: () => void
+}) {
+  const { t } = useI18n()
+
+  const [form, setForm] = useState<Record<string, string>>(() => {
+    const init: Record<string, string> = {}
+    for (const c of columns) {
+      const v = (initial as Record<string, unknown>)[c]
+      init[c] = v === null || v === undefined ? '' : String(v)
+    }
+    // Sensible defaults for a brand-new rule
+    if (!isEdit) {
+      if (init.active === '') init.active = '1'
+      if (init.apply === '') init.apply = '1'
+      if (init.rule_id === '') {
+        const next = existingIds.length ? Math.max(...existingIds) + 10 : 100
+        init.rule_id = String(next)
+      }
+    }
+    return init
+  })
+  const [showAdvanced, setShowAdvanced] = useState(false)
+
+  const grouped = useMemo(() => {
+    const known = new Set(FIELD_GROUPS.flatMap((g) => g.columns))
+    const groups = FIELD_GROUPS
+      .map((g) => ({ key: g.key, columns: g.columns.filter((c) => columns.includes(c)) }))
+      .filter((g) => g.columns.length > 0)
+    const other = columns.filter((c) => !known.has(c))
+    return { groups, other }
+  }, [columns])
+
+  /** Client-side guards that mirror ProxySQL's own constraints. */
+  const validation = useMemo(() => {
+    const errors: string[] = []
+    const warnings: string[] = []
+
+    const rid = form.rule_id?.trim()
+    if (!rid) {
+      errors.push(t('rules.err.ruleIdRequired'))
+    } else if (!/^\d+$/.test(rid)) {
+      errors.push(t('rules.err.ruleIdNumeric'))
+    } else if (!isEdit && existingIds.includes(Number(rid))) {
+      errors.push(t('rules.err.ruleIdDuplicate').replace('{id}', rid))
+    }
+
+    const hasPattern = !!form.match_pattern?.trim()
+    const hasDigest = !!form.match_digest?.trim()
+    if (hasPattern && hasDigest) {
+      warnings.push(t('rules.warn.bothMatchers'))
+    }
+    if (!hasPattern && !hasDigest) {
+      warnings.push(t('rules.warn.noMatcher'))
+    }
+    // Comment-based routing must use match_pattern: ProxySQL strips comments
+    // before computing the digest, so match_digest can never see them.
+    if (hasDigest && /\/\*/.test(form.match_digest || '')) {
+      warnings.push(t('rules.warn.commentInDigest'))
+    }
+    if (!form.destination_hostgroup?.trim() && !form.mirror_hostgroup?.trim()) {
+      warnings.push(t('rules.warn.noDestination'))
+    }
+
+    for (const key of ['match_pattern', 'match_digest'] as const) {
+      const src = form[key]?.trim()
+      if (!src) continue
+      try {
+        new RegExp(src.replace(/^\(\?i\)/, ''))
+      } catch (e) {
+        errors.push(`${key}: ${(e as Error).message}`)
+      }
+    }
+
+    return { errors, warnings }
+  }, [form, isEdit, existingIds, t])
+
+  const submit = () => {
+    if (validation.errors.length > 0) return
+    // Send only non-empty values so ProxySQL applies its own column defaults.
+    const payload: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(form)) {
+      if (v !== '') payload[k] = v
+    }
+    onSubmit(payload)
+  }
+
+  const renderField = (col: string) => {
+    const hintKey = FIELD_HINTS[col]
+    const isPk = col === 'rule_id'
+    const locked = isEdit && isPk
+
+    return (
+      <div key={col} className={TEXTAREA_COLUMNS.has(col) ? 'sm:col-span-2' : ''}>
+        <label className="flex items-center justify-between text-xs font-medium text-gray-700 dark:text-slate-300 mb-1">
+          <span className="font-mono">{col}</span>
+          {isPk && <span className="text-[10px] text-amber-600 dark:text-amber-400 uppercase">PK</span>}
+        </label>
+
+        {BOOLEAN_COLUMNS.has(col) ? (
+          <select
+            value={form[col] ?? ''}
+            onChange={(e) => setForm({ ...form, [col]: e.target.value })}
+            className="w-full px-2 py-1.5 text-sm border border-gray-300 dark:border-slate-600 rounded bg-white dark:bg-slate-900 text-gray-800 dark:text-slate-200"
+          >
+            <option value="">{t('rules.form.unset')}</option>
+            <option value="1">1 · {t('rules.form.yes')}</option>
+            <option value="0">0 · {t('rules.form.no')}</option>
+          </select>
+        ) : TEXTAREA_COLUMNS.has(col) ? (
+          <textarea
+            value={form[col] ?? ''}
+            onChange={(e) => setForm({ ...form, [col]: e.target.value })}
+            rows={col === 'comment' ? 2 : 3}
+            spellCheck={false}
+            className="w-full px-2 py-1.5 text-xs font-mono border border-gray-300 dark:border-slate-600 rounded bg-white dark:bg-slate-900 text-gray-800 dark:text-slate-200"
+          />
+        ) : (
+          <input
+            type="text"
+            value={form[col] ?? ''}
+            onChange={(e) => setForm({ ...form, [col]: e.target.value })}
+            disabled={locked}
+            className="w-full px-2 py-1.5 text-sm border border-gray-300 dark:border-slate-600 rounded bg-white dark:bg-slate-900 text-gray-800 dark:text-slate-200 disabled:bg-gray-100 dark:disabled:bg-slate-700 disabled:text-gray-500"
+          />
+        )}
+
+        {hintKey && (
+          <p className="mt-0.5 text-[11px] text-gray-500 dark:text-slate-500">{t(hintKey)}</p>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div
+        className="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-3xl max-h-[88vh] flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-5 py-3 border-b border-gray-200 dark:border-slate-700 flex items-center justify-between shrink-0">
+          <div>
+            <h3 className="font-semibold text-gray-900 dark:text-slate-100">
+              {isEdit ? t('rules.form.editTitle') : t('rules.form.createTitle')}
+            </h3>
+            <p className="text-xs text-gray-500 dark:text-slate-400 mt-0.5">{t('rules.form.memoryNote')}</p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-slate-200">
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="overflow-y-auto px-5 py-4 space-y-5">
+          {grouped.groups.map((g) => (
+            <fieldset key={g.key}>
+              <legend className="text-sm font-semibold text-gray-800 dark:text-slate-200 mb-2">
+                {t(`rules.form.group.${g.key}`)}
+              </legend>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {g.columns.map(renderField)}
+              </div>
+            </fieldset>
+          ))}
+
+          {grouped.other.length > 0 && (
+            <fieldset>
+              <button
+                type="button"
+                onClick={() => setShowAdvanced((v) => !v)}
+                className="flex items-center gap-1 text-sm font-semibold text-gray-700 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400"
+              >
+                {showAdvanced ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                {t('rules.form.group.advanced')}
+                <span className="text-xs font-normal text-gray-400">({grouped.other.length})</span>
+              </button>
+              {showAdvanced && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-2">
+                  {grouped.other.map(renderField)}
+                </div>
+              )}
+            </fieldset>
+          )}
+
+          {validation.errors.length > 0 && (
+            <div className="flex items-start gap-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-lg px-3 py-2">
+              <AlertTriangle size={15} className="text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
+              <ul className="text-xs text-red-700 dark:text-red-400 space-y-0.5">
+                {validation.errors.map((e, i) => <li key={i}>{e}</li>)}
+              </ul>
+            </div>
+          )}
+          {validation.warnings.length > 0 && (
+            <div className="flex items-start gap-2 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-300 dark:border-yellow-700 rounded-lg px-3 py-2">
+              <Info size={15} className="text-yellow-700 dark:text-yellow-400 shrink-0 mt-0.5" />
+              <ul className="text-xs text-yellow-800 dark:text-yellow-300 space-y-0.5">
+                {validation.warnings.map((w, i) => <li key={i}>{w}</li>)}
+              </ul>
+            </div>
+          )}
+        </div>
+
+        <div className="px-5 py-3 border-t border-gray-200 dark:border-slate-700 flex items-center justify-between shrink-0">
+          <p className="text-xs text-gray-500 dark:text-slate-400">{t('rules.form.applyReminder')}</p>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-3 py-1.5 text-sm text-gray-700 dark:text-slate-300 border border-gray-300 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-700"
+            >
+              {t('common.cancel')}
+            </button>
+            <button
+              type="button"
+              onClick={submit}
+              disabled={submitting || validation.errors.length > 0}
+              className="px-3 py-1.5 text-sm text-white bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg"
+            >
+              {submitting ? t('common.loading') : t('common.save')}
+            </button>
+          </div>
         </div>
       </div>
     </div>
