@@ -968,6 +968,10 @@ export const zhCN: Record<string, string> = {
   'backup.deleteConfirmDesc': '删除后不可恢复，确定要删除此备份吗？',
   'backup.deleting': '删除中…',
   'backup.noServerSelected': '未选择 ProxySQL 服务器，请先在服务器管理页面配置。',
+  'backup.createFailed': '创建备份失败',
+  'backup.listLoadFailed': '加载备份列表失败',
+  'backup.deleteFailed': '删除备份失败',
+  'backup.retry': '重试',
 
   // ── SQL 控制台扩展 ──
   'query.historyTitle': '查询历史',

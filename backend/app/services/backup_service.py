@@ -92,11 +92,13 @@ class BackupService:
         db = await get_db()
         try:
             cursor = await db.execute(
-                """SELECT id, server_id, user_id, name, description,
-                          table_count, row_count, size_bytes, created_at
-                   FROM config_backups
-                   WHERE server_id = ?
-                   ORDER BY created_at DESC""",
+                """SELECT cb.id, cb.server_id, cb.user_id, cb.name, cb.description,
+                          cb.table_count, cb.row_count, cb.size_bytes, cb.created_at,
+                          COALESCE(u.username, 'unknown') AS created_by
+                   FROM config_backups cb
+                   LEFT JOIN users u ON cb.user_id = u.id
+                   WHERE cb.server_id = ?
+                   ORDER BY cb.created_at DESC""",
                 (server_id,),
             )
             rows = await cursor.fetchall()
@@ -210,7 +212,6 @@ class BackupService:
             "succeeded": sum(1 for r in results if r["success"]),
             "failed": sum(1 for r in results if not r["success"]),
         }
-
 
     async def delete_backups(self, backup_ids: list[int]) -> int:
         """Batch-delete multiple backups.

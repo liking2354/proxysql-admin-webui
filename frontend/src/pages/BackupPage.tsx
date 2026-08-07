@@ -42,13 +42,18 @@ export default function BackupPage() {
   const [restoringId, setRestoringId] = useState<number | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null)
 
-  const { data: backupsRes, isLoading } = useQuery({
+  const { data: backupsRes, isLoading, isError: isListError, refetch: refetchBackups } = useQuery({
     queryKey: ['backups', selectedId],
     queryFn: () => backupApi.list(selectedId!),
     enabled: !!selectedId,
   })
 
   const backups: Backup[] = backupsRes?.data?.backups || []
+
+  function extractErrorMessage(err: unknown, fallback: string): string {
+    const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+    return detail || fallback
+  }
 
   const createMutation = useMutation({
     mutationFn: (name: string) =>
@@ -137,6 +142,12 @@ export default function BackupPage() {
             {t('backup.create')}
           </button>
         </div>
+        {createMutation.isError && (
+          <div className="mt-3 flex items-center gap-2 text-sm text-red-600 dark:text-red-400">
+            <XCircle size={14} />
+            {extractErrorMessage(createMutation.error, t('backup.createFailed'))}
+          </div>
+        )}
       </div>
 
       {/* Backup List */}
@@ -149,6 +160,17 @@ export default function BackupPage() {
 
         {isLoading ? (
           <div className="p-8 text-center text-gray-500 dark:text-slate-400">{t('common.loading')}</div>
+        ) : isListError ? (
+          <div className="p-8 text-center text-red-500 dark:text-red-400">
+            <XCircle size={40} className="mx-auto mb-3 opacity-60" />
+            <p>{t('backup.listLoadFailed')}</p>
+            <button
+              onClick={() => refetchBackups()}
+              className="mt-3 inline-flex items-center gap-1 px-3 py-1.5 text-sm border border-red-300 dark:border-red-700 rounded-lg text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+            >
+              {t('backup.retry')}
+            </button>
+          </div>
         ) : backups.length === 0 ? (
           <div className="p-8 text-center text-gray-400 dark:text-slate-500">
             <Archive size={40} className="mx-auto mb-3 opacity-40" />
@@ -176,8 +198,8 @@ export default function BackupPage() {
                         <Database size={12} />{b.table_count}
                       </span>
                     </td>
-                    <td className="py-3 px-4 text-gray-600 dark:text-slate-400">{b.row_count.toLocaleString()}</td>
-                    <td className="py-3 px-4 text-gray-600 dark:text-slate-400">{formatSize(b.size_bytes)}</td>
+                 <td className="py-3 px-4 text-gray-600 dark:text-slate-400">{(b.row_count ?? 0).toLocaleString()}</td>
+        <td className="py-3 px-4 text-gray-600 dark:text-slate-400">{formatSize(b.size_bytes ?? 0)}</td>
                     <td className="py-3 px-4 text-gray-500 dark:text-slate-500">
                       <span className="inline-flex items-center gap-1">
                         <Clock size={12} />{formatDate(b.created_at)}
@@ -278,6 +300,12 @@ export default function BackupPage() {
                 {deleteMutation.isPending ? t('backup.deleting') : t('common.delete')}
               </button>
             </div>
+            {deleteMutation.isError && (
+              <div className="mt-3 flex items-center gap-2 text-sm text-red-600 dark:text-red-400">
+                <XCircle size={14} />
+                {extractErrorMessage(deleteMutation.error, t('backup.deleteFailed'))}
+              </div>
+            )}
           </div>
         </div>
       )}

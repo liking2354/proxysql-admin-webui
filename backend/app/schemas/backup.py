@@ -14,6 +14,8 @@ class BackupItem(BaseModel):
     created_by: str = Field(description="Username who created the backup.")
     created_at: datetime = Field(description="ISO 8601 creation timestamp.")
     size_bytes: Optional[int] = Field(default=None, description="Backup data size in bytes.")
+    table_count: int = Field(default=0, description="Number of config tables included in the backup.")
+    row_count: int = Field(default=0, description="Total number of rows across all tables in the backup.")
 
 
 class BackupListResponse(BaseModel):

@@ -962,6 +962,10 @@ export const enUS: Record<string, string> = {
   'backup.deleteConfirmDesc': 'This action is irreversible. Are you sure you want to delete this backup?',
   'backup.deleting': 'Deleting…',
   'backup.noServerSelected': 'No ProxySQL server selected. Please configure one in the Servers page.',
+  'backup.createFailed': 'Failed to create backup',
+  'backup.listLoadFailed': 'Failed to load backup list',
+  'backup.deleteFailed': 'Failed to delete backup',
+  'backup.retry': 'Retry',
 
   // ── SQL Console Extended ──
   'query.historyTitle': 'Query History',
