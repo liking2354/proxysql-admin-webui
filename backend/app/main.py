@@ -23,7 +23,7 @@ from app.version import get_version
 from app.api.v1 import (
     auth, tables, sync, query, dashboard, users, servers, wizards,
     config_diff, clusters, templates, backup, export, scheduler,
-    db_manager,
+    db_manager, route_policies,
 )
 from app.api.v1 import settings as settings_api
 from app.schemas.response import HealthResponse
@@ -79,6 +79,7 @@ app.include_router(clusters.router, prefix="/api/v1/clusters", tags=["Clusters"]
 app.include_router(backup.router, prefix="/api/v1/backup", tags=["Backup"])
 app.include_router(export.router, prefix="/api/v1/export", tags=["Export"])
 app.include_router(scheduler.router, prefix="/api/v1/scheduler", tags=["Scheduler"])
+app.include_router(route_policies.router, prefix="/api/v1/route-policies", tags=["Route Policies"])
 app.include_router(db_manager.router, tags=["Database Manager"])
 app.include_router(dashboard.ws_router, prefix="/ws/dashboard", tags=["Dashboard WS"])
 

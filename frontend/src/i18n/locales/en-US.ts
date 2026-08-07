@@ -196,6 +196,21 @@ export const enUS: Record<string, string> = {
   'rules.health.commentInDigest': 'match_digest contains /* but comments are stripped before the digest is computed, so this rule can never match. Comment-based rules must use match_pattern',
   'rules.health.neverHit': 'The rule is active but has never matched. Verify the regex, or this traffic pattern has not occurred yet',
 
+  // ── Route policy & misroute detection ──
+  'rules.policy.desc': 'Declare this instance\'s read/write strategy per hostgroup; each ProxySQL instance can be configured independently',
+  'rules.policy.label': 'Route policy',
+  'rules.policy.none': 'Not set',
+  'rules.policy.writeOnly': 'Write only',
+  'rules.policy.readOnly': 'Read only',
+  'rules.health.misrouteCritical': 'Write / locking-read violating policy detected — data may have landed on the wrong database:',
+  'rules.health.misrouteWarning': 'Plain read landed on a write_only hostgroup — not unsafe, but wastes cross-cloud bandwidth:',
+  'rules.misroute.checkNow': 'Check now',
+  'rules.misroute.checking': 'Checking…',
+  'rules.misroute.resetStats': 'Reset stats',
+  'rules.misroute.confirmReset': 'This clears ProxySQL\'s query digest counters (stats_mysql_query_digest). Continue?',
+  'rules.misroute.lastChecked': 'Last checked',
+  'rules.misroute.noViolations': '✓ No violations found',
+
   // ── Wizards ──
   'wizard.title': 'Configuration Wizards',
   'wizard.subtitle': 'Guided forms that help you configure ProxySQL without writing SQL. Wizards marked "Planned" are part of the roadmap and not yet executable.',

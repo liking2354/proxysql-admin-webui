@@ -200,6 +200,21 @@ export const zhCN: Record<string, string> = {
   'rules.health.commentInDigest': 'match_digest 中包含注释符 /*，但 digest 已剥离注释，该规则永远不会命中。注释类规则必须改用 match_pattern',
   'rules.health.neverHit': '规则已启用但累计命中数为 0，请确认正则是否正确、或该类流量尚未出现',
 
+  // ── 路由策略与误路由检测 ──
+  'rules.policy.desc': '按 hostgroup 声明该实例的读写策略；不同 ProxySQL 实例可各自配置，互不影响',
+  'rules.policy.label': '路由策略',
+  'rules.policy.none': '未设置',
+  'rules.policy.writeOnly': '只写(write_only)',
+  'rules.policy.readOnly': '只读(read_only)',
+  'rules.health.misrouteCritical': '发现违反策略的写操作/加锁读，可能已写入错误的库：',
+  'rules.health.misrouteWarning': '发现落在只写hostgroup上的普通读，非风险但浪费跨云带宽：',
+  'rules.misroute.checkNow': '立即检测',
+  'rules.misroute.checking': '检测中…',
+  'rules.misroute.resetStats': '重置统计',
+  'rules.misroute.confirmReset': '将清空ProxySQL 的查询统计计数器（stats_mysql_query_digest），确认继续？',
+  'rules.misroute.lastChecked': '上次检测',
+  'rules.misroute.noViolations': '✓ 未发现违规',
+
   // ── 配置向导 ──
   'wizard.title': '配置向导',
   'wizard.subtitle': '引导式表单帮助您无需编写 SQL 即可配置 ProxySQL。标记为"规划中"的向导属于路线图，暂不可执行。',

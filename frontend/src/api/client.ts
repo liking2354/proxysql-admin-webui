@@ -209,6 +209,20 @@ export const backupApi = {
     apiClient.delete(`/api/v1/backup/${serverId}/${backupId}`),
 }
 
+// Route Policy API (per-server 写/读 hostgroup 策略 + 误路由检测)
+export const routePolicyApi = {
+  list: (serverId: string) =>
+    apiClient.get(`/api/v1/route-policies/${serverId}`),
+  upsert: (serverId: string, data: { hostgroup_id: number; policy: 'write_only' | 'read_only'; enabled?: boolean }) =>
+    apiClient.put(`/api/v1/route-policies/${serverId}`, data),
+  delete: (serverId: string, policyId: number) =>
+    apiClient.delete(`/api/v1/route-policies/${serverId}/${policyId}`),
+  check: (serverId: string) =>
+    apiClient.get(`/api/v1/route-policies/${serverId}/check`),
+  resetStats: (serverId: string) =>
+    apiClient.post(`/api/v1/route-policies/${serverId}/reset-stats`),
+}
+
 // Export API
 export const exportApi = {
   queryResult: (serverId: string, sql: string, format: string = 'csv') =>

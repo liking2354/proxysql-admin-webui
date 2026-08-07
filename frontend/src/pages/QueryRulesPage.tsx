@@ -1,12 +1,13 @@
 import { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { tablesApi, syncApi } from '../api/client'
+import { tablesApi, syncApi, routePolicyApi } from '../api/client'
 import { useServerStore } from '../stores/serverStore'
 import { useI18n } from '../i18n'
 import {
   Route, Play, ChevronDown, ChevronRight, AlertTriangle, CheckCircle2,
   Copy, Check, Zap, ArrowDown, Server, Layers, RefreshCw, Save,
-  Eye, EyeOff, Search, X, Plus, Edit2, Trash2, Info,
+  Eye, EyeOff, Search, X, Plus, Edit2, Trash2, Info, ShieldAlert,
+  ShieldCheck, RotateCcw,
 } from 'lucide-react'
 
 /** A row from mysql_query_rules. */
@@ -52,6 +53,33 @@ interface MysqlUser {
   active: number | string
   transaction_persistent: number | string
   [key: string]: unknown
+}
+
+/** A per-server hostgroup role declaration (route_policies table). */
+interface RoutePolicyItem {
+  id: number
+  server_id: string
+  hostgroup_id: number
+  policy: 'write_only' | 'read_only'
+  enabled: boolean
+}
+
+/** A SQL digest that violates its hostgroup's declared policy. */
+interface MisrouteViolation {
+  hostgroup_id: number
+  policy: 'write_only' | 'read_only'
+  severity: 'critical' | 'warning'
+  digest_text: string
+  count_star: number
+  first_seen?: string | null
+  last_seen?: string | null
+}
+
+interface MisrouteCheckResult {
+  checked_at: string
+  policies_defined: boolean
+  violations: MisrouteViolation[]
+  has_critical: boolean
 }
 
 /** Result of simulating one SQL statement against the rule chain. */
@@ -294,6 +322,58 @@ export default function QueryRulesPage() {
     refetchInterval: 10000,
   })
 
+  // ── Route policy (per-server写/读 hostgroup 策略) +误路由检测 ──
+  const { data: policiesRes } = useQuery({
+    queryKey: ['route-policies', selectedId],
+    queryFn: () => routePolicyApi.list(selectedId!),
+    enabled: !!selectedId,
+  })
+  const policies: RoutePolicyItem[] = policiesRes?.data?.policies || []
+  const policyByHg = useMemo(
+    () => new Map(policies.map((p) => [Number(p.hostgroup_id), p])),
+    [policies],
+  )
+  const hasActivePolicies = policies.some((p) => p.enabled)
+
+  const { data: misrouteRes, isFetching: isCheckingMisroute, refetch: refetchMisroute } = useQuery({
+    queryKey: ['route-misroute-check', selectedId],
+    queryFn: () => routePolicyApi.check(selectedId!),
+    enabled: !!selectedId && hasActivePolicies,
+    refetchInterval: hasActivePolicies ? 30000 : false,
+  })
+  const misroute: MisrouteCheckResult | null = misrouteRes?.data ?? null
+  const misrouteViolations = misroute?.violations || []
+  const misrouteCritical = misrouteViolations.filter((v) => v.severity === 'critical')
+
+  const upsertPolicyMut = useMutation({
+    mutationFn: (vars: { hostgroupId: number; policy: 'write_only' | 'read_only' }) =>
+      routePolicyApi.upsert(selectedId!, { hostgroup_id: vars.hostgroupId, policy: vars.policy }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['route-policies', selectedId] })
+      queryClient.invalidateQueries({ queryKey: ['route-misroute-check', selectedId] })
+    },
+  })
+  const deletePolicyMut = useMutation({
+    mutationFn: (policyId: number) => routePolicyApi.delete(selectedId!, policyId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['route-policies', selectedId] })
+      queryClient.invalidateQueries({ queryKey: ['route-misroute-check', selectedId] })
+    },
+  })
+  const resetStatsMut = useMutation({
+    mutationFn: () => routePolicyApi.resetStats(selectedId!),
+    onSuccess: () => refetchMisroute(),
+  })
+
+  const handlePolicyChange = (hg: number, value: string) => {
+    const existing = policyByHg.get(hg)
+    if (value === '') {
+      if (existing) deletePolicyMut.mutate(existing.id)
+    } else {
+      upsertPolicyMut.mutate({ hostgroupId: hg, policy: value as 'write_only' | 'read_only' })
+    }
+  }
+
   const applyMut = useMutation({
     mutationFn: () => syncApi.apply(selectedId!, ['mysql_query_rules']),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['qr-rules'] }),
@@ -484,10 +564,10 @@ export default function QueryRulesPage() {
         </div>
       </div>
 
-      {/* ── Rule health self-check ── */}
-      {healthIssues.length > 0 && (
+      {/* ── Rule health self-check (静态规则检查 + 误路由检测) ── */}
+      {(healthIssues.length > 0 || misrouteViolations.length > 0) && (
         <div className={`rounded-lg border px-4 py-3 ${
-          criticalIssues.length > 0
+          criticalIssues.length > 0 || misrouteCritical.length > 0
             ? 'bg-red-50 dark:bg-red-900/20 border-red-300 dark:border-red-700'
             : 'bg-yellow-50 dark:bg-yellow-900/20 border-yellow-300 dark:border-yellow-700'
         }`}>
@@ -495,24 +575,24 @@ export default function QueryRulesPage() {
             <AlertTriangle
               size={18}
               className={`shrink-0 mt-0.5 ${
-                criticalIssues.length > 0
+                criticalIssues.length > 0 || misrouteCritical.length > 0
                   ? 'text-red-600 dark:text-red-400'
                   : 'text-yellow-700 dark:text-yellow-400'
               }`}
             />
             <div className="flex-1">
               <p className={`font-medium text-sm ${
-                criticalIssues.length > 0
+                criticalIssues.length > 0 || misrouteCritical.length > 0
                   ? 'text-red-800 dark:text-red-300'
                   : 'text-yellow-800 dark:text-yellow-300'
               }`}>
-                {criticalIssues.length > 0
-                  ? t('rules.health.criticalTitle').replace('{n}', String(criticalIssues.length))
-                  : t('rules.health.warnTitle').replace('{n}', String(healthIssues.length))}
+                {criticalIssues.length > 0 || misrouteCritical.length > 0
+                  ? t('rules.health.criticalTitle').replace('{n}', String(criticalIssues.length + misrouteCritical.length))
+                  : t('rules.health.warnTitle').replace('{n}', String(healthIssues.length + misrouteViolations.length))}
               </p>
               <ul className="mt-1.5 space-y-1">
                 {healthIssues.map((issue, i) => (
-                  <li key={i} className="text-xs flex items-start gap-1.5">
+                  <li key={`rule-${i}`} className="text-xs flex items-start gap-1.5">
                     <span className={`font-mono font-bold shrink-0 ${
                       issue.severity === 'error'
                         ? 'text-red-700 dark:text-red-400'
@@ -526,6 +606,29 @@ export default function QueryRulesPage() {
                         : 'text-yellow-800 dark:text-yellow-300'
                     }>
                       {t(issue.msgKey)}
+                    </span>
+                  </li>
+                ))}
+                {misrouteViolations.map((v, i) => (
+                  <li key={`misroute-${i}`} className="text-xs flex items-start gap-1.5">
+                    <span className={`font-mono font-bold shrink-0 ${
+                      v.severity === 'critical'
+                        ? 'text-red-700 dark:text-red-400'
+                        : 'text-yellow-800 dark:text-yellow-400'
+                    }`}>
+                      HG{v.hostgroup_id}
+                    </span>
+                    <span className={
+                      v.severity === 'critical'
+                        ? 'text-red-700 dark:text-red-400'
+                        : 'text-yellow-800 dark:text-yellow-300'
+                    }>
+                      {v.severity === 'critical'
+                        ? t('rules.health.misrouteCritical')
+                        : t('rules.health.misrouteWarning')}
+                      {' '}
+                      <code className="font-mono">{v.digest_text.slice(0, 60)}{v.digest_text.length > 60 ? '…' : ''}</code>
+                      {' '}({t('rules.hits')} {v.count_star.toLocaleString()})
                     </span>
                   </li>
                 ))}
@@ -991,38 +1094,113 @@ export default function QueryRulesPage() {
         </div>
       </div>
 
-      {/* ── Hostgroup topology ── */}
+      {/* ── Hostgroup topology +路由策略 + 误路由检测 ── */}
       <div className="bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 overflow-hidden">
-        <div className="px-5 py-3 border-b border-gray-200 dark:border-slate-700">
-          <h3 className="font-semibold text-gray-900 dark:text-slate-100 flex items-center gap-2">
-            <Server size={18} className="text-blue-600 dark:text-blue-400" />
-            {t('rules.topologyTitle')}
-          </h3>
+        <div className="px-5 py-3 border-b border-gray-200 dark:border-slate-700 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="font-semibold text-gray-900 dark:text-slate-100 flex items-center gap-2">
+              <Server size={18} className="text-blue-600 dark:text-blue-400" />
+              {t('rules.topologyTitle')}
+            </h3>
+            <p className="text-xs text-gray-500 dark:text-slate-400 mt-0.5">{t('rules.policy.desc')}</p>
+          </div>
+          {hasActivePolicies && (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => refetchMisroute()}
+                disabled={isCheckingMisroute}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-lg transition-colors"
+              >
+                <RefreshCw size={13} className={isCheckingMisroute ? 'animate-spin' : ''} />
+                {isCheckingMisroute ? t('rules.misroute.checking') : t('rules.misroute.checkNow')}
+              </button>
+              {misrouteViolations.length > 0 && (
+                <button
+                  onClick={() => {
+                    if (confirm(t('rules.misroute.confirmReset'))) resetStatsMut.mutate()
+                  }}
+                  disabled={resetStatsMut.isPending}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-600 dark:text-slate-300 border border-gray-300 dark:border-slate-600 rounded-lg hover:bg-gray-50 dark:hover:bg-slate-700 disabled:opacity-50"
+                >
+                  <RotateCcw size={13} />
+                  {t('rules.misroute.resetStats')}
+                </button>
+              )}
+            </div>
+          )}
         </div>
         <div className="p-5 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
           {[...hgMap.entries()].sort((a, b) => Number(a[0]) - Number(b[0])).map(([hg, hosts]) => {
             const usedBy = rules.filter((r) => String(r.destination_hostgroup) === hg).map((r) => Number(r.rule_id))
             const isDefault = String(defaultHg) === hg
+            const hgNum = Number(hg)
+            const policy = policyByHg.get(hgNum)
+            const hgViolations = misrouteViolations.filter((v) => v.hostgroup_id === hgNum)
+            const hgHasCritical = hgViolations.some((v) => v.severity === 'critical')
             return (
-              <div key={hg} className="rounded-lg border border-gray-200 dark:border-slate-700 p-3">
+              <div key={hg} className={`rounded-lg border p-3 ${
+                hgHasCritical
+                  ? 'border-red-300 dark:border-red-700 bg-red-50/50 dark:bg-red-900/10'
+                  : 'border-gray-200 dark:border-slate-700'
+              }`}>
                 <div className="flex items-center justify-between mb-2">
                   <span className="font-mono text-sm font-bold text-gray-900 dark:text-slate-100">HG{hg}</span>
-                  {isDefault && (
-                    <span className="text-[11px] px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300">
-                      {t('rules.isDefault')}
-                    </span>
-                  )}
+                  <div className="flex items-center gap-1.5">
+                    {isDefault && (
+                      <span className="text-[11px] px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300">
+                        {t('rules.isDefault')}
+                      </span>
+                    )}
+                    {hgHasCritical ? (
+                      <ShieldAlert size={15} className="text-red-600 dark:text-red-400" />
+                    ) : policy?.enabled ? (
+                      <ShieldCheck size={15} className="text-green-600 dark:text-green-400" />
+                    ) : null}
+                  </div>
                 </div>
                 <ul className="space-y-0.5 mb-2">
                   {hosts.map((h) => (
                     <li key={h} className="font-mono text-xs text-gray-600 dark:text-slate-400">{h}</li>
                   ))}
                 </ul>
-                <p className="text-[11px] text-gray-500 dark:text-slate-500">
+                <p className="text-[11px] text-gray-500 dark:text-slate-500 mb-2">
                   {usedBy.length > 0
                     ? `${t('rules.usedByRules')}: ${usedBy.map((r) => `#${r}`).join(', ')}`
                     : t('rules.noRuleTargets')}
                 </p>
+
+                {/* 路由策略选择 */}
+                <div className="pt-2 border-t border-gray-100 dark:border-slate-700">
+                  <label className="text-[11px] text-gray-500 dark:text-slate-500 block mb-1">
+                    {t('rules.policy.label')}
+                  </label>
+                  <select
+                    value={policy?.policy ?? ''}
+                    onChange={(e) => handlePolicyChange(hgNum, e.target.value)}
+                    disabled={upsertPolicyMut.isPending || deletePolicyMut.isPending}
+                    className="w-full px-2 py-1 text-xs border border-gray-300 dark:border-slate-600 rounded bg-white dark:bg-slate-900 text-gray-800 dark:text-slate-200"
+                  >
+                    <option value="">{t('rules.policy.none')}</option>
+                    <option value="write_only">{t('rules.policy.writeOnly')}</option>
+                    <option value="read_only">{t('rules.policy.readOnly')}</option>
+                  </select>
+                </div>
+
+                {/* 该hostgroup的违规明细 */}
+                {hgViolations.length > 0 && (
+                  <ul className="mt-2 space-y-1">
+                    {hgViolations.map((v, i) => (
+                      <li key={i} className={`text-[11px] rounded px-2 py-1 ${
+                        v.severity === 'critical'
+                          ? 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400'
+                          : 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-800 dark:text-yellow-400'
+                      }`}>
+                        <code className="font-mono break-all">{v.digest_text.slice(0, 50)}{v.digest_text.length > 50 ? '…' : ''}</code>
+                        <span className="ml-1 opacity-75">× {v.count_star.toLocaleString()}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
             )
           })}
@@ -1030,6 +1208,16 @@ export default function QueryRulesPage() {
             <p className="text-sm text-gray-400 dark:text-slate-500">{t('rules.noServers')}</p>
           )}
         </div>
+        {hasActivePolicies && (
+          <div className="px-5 pb-4 -mt-1 text-xs text-gray-400 dark:text-slate-500">
+            {misroute?.checked_at
+              ? `${t('rules.misroute.lastChecked')}: ${new Date(misroute.checked_at).toLocaleString()}`
+              : t('rules.misroute.checking')}
+            {misroute && !misroute.has_critical && misrouteViolations.length === 0 && (
+              <span className="ml-2 text-green-600 dark:text-green-400">{t('rules.misroute.noViolations')}</span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* ── Rule editor ── */}

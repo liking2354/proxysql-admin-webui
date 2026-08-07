@@ -203,6 +203,19 @@ CREATE TABLE IF NOT EXISTS user_server_permissions (
 
 CREATE INDEX IF NOT EXISTS idx_user_server_perms_user ON user_server_permissions(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_server_perms_server ON user_server_permissions(server_id);
+
+CREATE TABLE IF NOT EXISTS route_policies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    server_id VARCHAR(36) NOT NULL REFERENCES server_configs(id) ON DELETE CASCADE,
+    hostgroup_id INTEGER NOT NULL,
+    policy VARCHAR(16) NOT NULL CHECK(policy IN ('write_only', 'read_only')),
+    enabled BOOLEAN NOT NULL DEFAULT 1,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(server_id, hostgroup_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_route_policies_server ON route_policies(server_id);
 """
 
 
